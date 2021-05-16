@@ -1,3 +1,4 @@
-# acmOS-riscv
+# acmOS-spr21
+acmOS-spr21
 
-2021 MS110 Project. 
+Enjoy!

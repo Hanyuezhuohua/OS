@@ -16,7 +16,7 @@ static void printk_write_num(int base, unsigned long long n, int neg) {
     if (neg) str[cnt++] = '-';
     while (n != 0) { stack[top++] = n % base; n /= base; }
     while (top) {
-    	int x = stack[--top];
+    	unsigned int x = stack[--top];
     	if (x >= 0 && x <= 9) str[cnt++] = '0' + x;
     	else str[cnt++] = 'a' + (x - 10);
     }
