@@ -50,7 +50,7 @@ paddr_t pt_query_address(pagetable_t pagetable, vaddr_t va){
     //pt_query(0, 0, 1);
     pte_t* pte = pt_query(pagetable, va, 0);
     if(pte == NULL) return 0;
-    return PTE2PA(*pte) | va % PGSIZE;
+    return PTE2PA(*pte) | (va & 0xfff);
  //   return /* Return value here */ 0;
 }
 
@@ -64,6 +64,6 @@ int pt_unmap_addrs(pagetable_t pagetable, vaddr_t va){
 int pt_map_addrs(pagetable_t pagetable, vaddr_t va, paddr_t pa, int perm){
     // Suggested: 2 LoCs
     pte_t* pte = pt_query(pagetable, va, 1);
-    *pte = PA2PTE(pa) | perm | PTE_V;  
+    if(pte != NULL) *pte = PA2PTE(pa) | perm | PTE_V;
     return 0; // Do not modify
 }
