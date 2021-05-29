@@ -67,13 +67,15 @@ void buddy_free_page(page_t* page) {
         if ((!((buddy_page->flags & BD_PAGE_FREE) && current_page->orders == buddy_page->orders))) {
             break;
         }
-        _buddy_get_specific_page(buddy_page);
         if(_buddy_get_page_idx(current_page) > _buddy_get_page_idx(buddy_page)){
-            buddy_page->flags = BD_PAGE_IN_USE;
+            _buddy_get_specific_page(buddy_page);
             _buddy_clear_flag(current_page);
             current_page = buddy_page;
         }
-        else _buddy_clear_flag(buddy_page);
+        else{
+            _buddy_get_specific_page(buddy_page);
+            _buddy_clear_flag(buddy_page);
+        }
     }
     _buddy_return_page(current_page);
 }
