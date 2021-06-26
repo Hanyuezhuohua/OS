@@ -9,6 +9,7 @@
 // and enable paging.
 
 extern char endTextSect[]; // indicate the end of the text section
+extern char trampoline[];
 pagetable_t kernel_pagetable;
 #include "answer_pgt.h"
 
@@ -45,5 +46,6 @@ void pt_kern_vmmap(){
     pt_unmap_addrs(kernel_pagetable, (uint64)kernel_pagetable);
     paddr_t unmapped_pa = pt_query_address(kernel_pagetable, (uint64) kernel_pagetable);
     ASSERT_EQ(unmapped_pa, 0, "unmap");
-    pt_map_addrs(kernel_pagetable, (uint64)kernel_pagetable, (uint64)kernel_pagetable, PTE_R | PTE_W);
+    pt_map_pages(kernel_pagetable, (uint64)kernel_pagetable, (uint64)kernel_pagetable, PGSIZE, PTE_R | PTE_W);
+    pt_map_pages(kernel_pagetable, (uint64)TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }

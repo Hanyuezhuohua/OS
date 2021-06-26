@@ -1,24 +1,26 @@
 void* kern_page_malloc() {
+    // Your Code here
     // Suggested: 6 LoCs
-    for (int i = 0; i < INIT_MAX_PAGES; ++i)
-        if (kernel_page_available[i] > 0) {
-            void* ret = (void*)kernel_page_available[i];
-            allocated_page++;
-            kernel_page_available[i] = 0;
-            return ret;
-        }
+    for(int i = 0; i < INIT_MAX_PAGES; ++i){
+        if(kernel_page_available[i] == 0) continue;
+        uint64 res = kernel_page_available[i];
+        kernel_page_available[i] = 0;
+        allocated_page++;
+        //return (void*) (&kernel_page_initialized[BUDDY_PAGE_SIZE * i]);
+        return (void*) res;
+    }
     return NULL;
 }
 
 void kern_page_free(void* ptr) {
-    if (((uint64)ptr) == 0 || ptr == NULL) {
+    if (/* Your condition here */ ptr == NULL || !(((uint64)ptr - (uint64)kernel_page_initialized) % BUDDY_PAGE_SIZE == 0 && ((uint64) ptr - (uint64) kernel_page_initialized) >= (uint64) 0 && ((uint64) ptr - (uint64) kernel_page_initialized) < (uint64) BUDDY_PAGE_SIZE * INIT_MAX_PAGES && !kernel_page_available[((uint64) ptr - (uint64) kernel_page_initialized) / (uint64) BUDDY_PAGE_SIZE])
+        ) {
         printk("[kfree] invalid kernel free function: %lx\n", ptr);
         return;
     }
-    // Suggested: 2 LoCs
-    kernel_page_available[((uint64)ptr - (uint64)kernel_page_initialized) / BUDDY_PAGE_SIZE]
-        = (uint64) (&kernel_page_initialized[((uint64)ptr - (uint64)kernel_page_initialized)]);
     allocated_page--;
+    kernel_page_available[((uint64) ptr - (uint64) kernel_page_initialized) / (uint64) BUDDY_PAGE_SIZE] = (uint64) ptr;
+    // Suggested: 2 LoCs
 }
 
 // malloc a page

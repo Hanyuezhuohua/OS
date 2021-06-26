@@ -2,9 +2,25 @@
 #include "lock.h"
 #include "pagetable.h"
 #include "elf.h"
+#include "memlayout.h"
+#include "printk.h"
+
+#define MYKSTACK(p) (TRAMPOLINE - ((p) + 1) * (NTHREAD + 1) * PGSIZE)
+#define PFLAGS2PTEFLAGS(PF)                                         \
+	(((PF)&PF_X ? PTE_X : 0) | ((PF)&PF_W ? PTE_W : 0) | \
+	 ((PF)&PF_R ? PTE_R : 0))
 
 extern const char binary_putc_start;
+extern char trampoline[], usertrap1[], usertrap2[];
+extern char endTextSect[];
+extern void swtch(context_t *old, context_t *new);
+extern void usertrap(void);
+extern void usertrapret();
+extern void my_ret(void);
+extern pagetable_t kernel_pagetable;
 thread_t *running[NCPU];
+process_t process[NPROC];
+context_t contexts[NCPU];
 struct list_head sched_list[NCPU];
 struct lock pidlock, tidlock, schedlock;
 int _pid, _tid;
@@ -15,9 +31,9 @@ int _pid, _tid;
 static uint64 load_binary(pagetable_t *target_page_table, const char *bin){
 	struct elf_file *elf;
     int i;
-    uint64 seg_sz, p_vaddr, seg_map_sz;
+    uint64 seg_sz, p_vaddr, seg_map_sz, file_sz, file_map_sz;
 	elf = elf_parse_file(bin);
-	
+
 	/* load each segment in the elf binary */
 	for (i = 0; i < elf->header.e_phnum; ++i) {
 		if (elf->p_headers[i].p_type == PT_LOAD) {
@@ -35,6 +51,20 @@ static uint64 load_binary(pagetable_t *target_page_table, const char *bin){
              * 通过 memcpy 将某一段复制进入这一块空间
              * 页表映射修改
              */
+            file_sz = elf->p_headers[i].p_filesz;
+            int *b = ((uint64)bin) + elf->p_headers[i].p_offset + elf->header.e_entry;
+            for(uint64 offset = 0; offset < seg_map_sz; offset += PGSIZE){
+                uint64 pa = (uint64)mm_kalloc();
+                memset(pa, 0, PGSIZE);
+                if(offset + PGSIZE == seg_map_sz){
+                    memcpy((void *)pa, (void*)(((uint64)bin) + elf->p_headers[i].p_offset + offset), file_sz - offset);
+                }
+                else memcpy((void *)pa, (void*)(((uint64)bin) + elf->p_headers[i].p_offset + offset), PGSIZE);
+                pt_map_pages(*target_page_table, p_vaddr + offset, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->p_headers[i].p_flags) | PTE_U);
+                //pt_map_pages(*target_page_table, p_vaddr + offset, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->header.e_flags) | PTE_U);               
+
+//                pt_map_pages(*target_page_table, pa, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->p_headers[i].p_flags) | PTE_U);
+            }
 		}
 	}
 	/* PC: the entry point */
@@ -53,7 +83,52 @@ static uint64 load_binary(pagetable_t *target_page_table, const char *bin){
  * 此外程序首次进入用户态之前，应该设置好trap处理向量为usertrap（或者你自定义的）
  */
 process_t *alloc_proc(const char* bin, thread_t *thr){
-    thr = NULL;
+    process_t *p;
+    for(p = process; p < &process[NPROC]; p++){
+        acquire(&p->process_lock);
+        if(p->process_state == UNUSED){
+            thr = &(p->threads[0]);
+
+            lock_init(&thr->thread_lock);
+            acquire(&thr->thread_lock);
+            init_list_head(&thr->process_list_thread_node);
+            list_append(&thr->process_list_thread_node, &p->thread_list);
+            thr->trapframe = (trapframe_t *)mm_kalloc();
+            thr->kstack = p->kstack; 
+
+            uint64 kstack_pa = (uint64)mm_kalloc();
+            pt_map_pages(kernel_pagetable, thr->kstack, kstack_pa, PGSIZE, PTE_R | PTE_W);
+
+            p->pagetable = (pagetable_t)mm_kalloc();
+            memset(p->pagetable, 0, PGSIZE);
+            pt_map_pages(p->pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);           
+            pt_map_pages(p->pagetable, TRAPFRAME, (uint64)(thr->trapframe), PGSIZE, PTE_R | PTE_W);
+            pt_map_pages(p->pagetable, thr->kstack, kstack_pa, PGSIZE, PTE_R | PTE_W);       
+            acquire(&pidlock);
+            p->pid = _pid++;
+            release(&pidlock);
+            
+            acquire(&tidlock);
+            thr->tid = _tid++;
+            release(&tidlock);
+
+            thr->context.sp = thr->kstack + PGSIZE;
+            thr->context.ra = (uint64)my_ret;
+
+            thr->trapframe->epc = load_binary(&p->pagetable, bin);
+            thr->trapframe->sp = 10 * PGSIZE;
+
+            uint64 ustack_pa = (uint64)mm_kalloc();
+            pt_map_pages(p->pagetable, thr->trapframe->sp - PGSIZE, ustack_pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+
+            p->process_state = RUNNABLE;
+            thr->thread_state = RUNNABLE;
+            release(&thr->thread_lock);
+            release(&p->process_lock);
+            return p;
+        }
+        release(&p->process_lock);
+    }
     return NULL;
 }
 
@@ -61,6 +136,8 @@ bool load_thread(file_type_t type){
     if(type == PUTC){
         thread_t *t = NULL;
         process_t *p = alloc_proc(&binary_putc_start, t);
+        t = &p->threads[0];
+        init_list_head(&t->sched_list_thread_node);
         if(!t) return false;
         sched_enqueue(t);
     } else {
@@ -80,7 +157,7 @@ void sched_enqueue(thread_t *target_thread){
 
 thread_t *sched_dequeue(){
     if(list_empty(&(sched_list[cpuid()]))) BUG("Scheduler List is empty");
-    thread_t *head = container_of(&(sched_list[cpuid()]), thread_t, sched_list_thread_node);
+    thread_t *head = container_of(sched_list[cpuid()].next, thread_t, sched_list_thread_node);
     list_del(&head->sched_list_thread_node);
     return head;
 }
@@ -90,8 +167,18 @@ bool sched_empty(){
 }
 
 // 开始运行某个特定的函数
-void thread_run(thread_t *target){
-
+void thread_run(thread_t *target){ //maybe wrong !!! 
+    acquire(&target->thread_lock);
+    if(target->thread_state == RUNNABLE){
+        int cpu_id = cpuid();
+        target->thread_state = RUNNING;
+        running[cpu_id] = target;
+//        printk("context: ra: %d, sp: %d, s0: %d, s1: %d, s2: %d, s3: %d, s4: %d, s5: %d, s6: %d, s7: %d, s8: %d, s9: %d, s10: %d, s11: %d\n", target->context.ra, target->context.sp, target->context.s0, target->context.s1, target->context.s2, target->context.s3, target->context.s4, target->context.s5, target->context.s6, target->context.s7, target->context.s8, target->context.s9, target->context.s10, target->context.s11);
+        swtch(&contexts[cpu_id], &target->context);        
+        //after yield
+        running[cpu_id] = 0;
+    }
+    release(&target->thread_lock);
 }
 
 // sched_start函数启动调度，按照调度的队列开始运行。
@@ -110,12 +197,46 @@ void sched_init(){
     init_list_head(&(sched_list[cpuid()]));
 }
 
+void sched_yield(void){
+    thread_t *t = thread_get();
+    acquire(&t->thread_lock);
+    t->thread_state = RUNNABLE;
+    sched_enqueue(t);
+    swtch(&t->context, &contexts[cpuid()]);
+    release(&t->thread_lock);
+}
+
+void sched_exit(int value){
+    thread_t *t = thread_get();
+    acquire(&t->thread_lock);
+    t->thread_state = ZOMBIE;
+    t->exit_state = value;
+    swtch(&t->context, &contexts[cpuid()]);
+    release(&t->thread_lock);
+}
+
 void proc_init(){
     // 初始化pid、tid锁
     lock_init(&pidlock);
     lock_init(&tidlock);
     // 接下来代码期望的目的：映射第一个用户线程并且插入调度队列
+    for(process_t *p = process; p < &process[NPROC]; p++){
+        lock_init(&p->process_lock);
+        init_list_head(&p->thread_list);
+        p->kstack = MYKSTACK((int) (p - process));
+        p->process_state = UNUSED;
+    }
     if(!load_thread(PUTC)) BUG("Load failed");
+}
+
+void my_ret(void){
+    thread_t *t = thread_get();
+    release(&t->thread_lock);
+    usertrapret();
+}
+
+thread_t* thread_get(){
+    return running[cpuid()];
 }
 
 

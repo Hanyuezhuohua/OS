@@ -29,9 +29,9 @@ void main(){
         mm_init();
         pt_init();
         trap_init_vec();
+//        suspend();
         sched_init();
         proc_init();
-        
         sync_synchronize();
         started = 1;
     } else {
