@@ -31,7 +31,7 @@ int _pid, _tid;
 static uint64 load_binary(pagetable_t *target_page_table, const char *bin){
 	struct elf_file *elf;
     int i;
-    uint64 seg_sz, p_vaddr, seg_map_sz, file_sz, file_map_sz;
+    uint64 seg_sz, p_vaddr, seg_map_sz, file_sz;
 	elf = elf_parse_file(bin);
 
 	/* load each segment in the elf binary */
@@ -52,18 +52,19 @@ static uint64 load_binary(pagetable_t *target_page_table, const char *bin){
              * 页表映射修改
              */
             file_sz = elf->p_headers[i].p_filesz;
-            int *b = ((uint64)bin) + elf->p_headers[i].p_offset + elf->header.e_entry;
             for(uint64 offset = 0; offset < seg_map_sz; offset += PGSIZE){
                 uint64 pa = (uint64)mm_kalloc();
-                memset(pa, 0, PGSIZE);
+                if(pa == 0){
+                    BUG("elf load alloc fail!");
+                }
+                memset((void*)pa, 0, PGSIZE);
                 if(offset + PGSIZE == seg_map_sz){
                     memcpy((void *)pa, (void*)(((uint64)bin) + elf->p_headers[i].p_offset + offset), file_sz - offset);
                 }
                 else memcpy((void *)pa, (void*)(((uint64)bin) + elf->p_headers[i].p_offset + offset), PGSIZE);
-                pt_map_pages(*target_page_table, p_vaddr + offset, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->p_headers[i].p_flags) | PTE_U);
-                //pt_map_pages(*target_page_table, p_vaddr + offset, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->header.e_flags) | PTE_U);               
-
-//                pt_map_pages(*target_page_table, pa, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->p_headers[i].p_flags) | PTE_U);
+                if(pt_map_pages(*target_page_table, p_vaddr + offset, pa, PGSIZE, PFLAGS2PTEFLAGS(elf->p_headers[i].p_flags) | PTE_U) < 0){
+                    BUG("elf load map fail!");
+                } 
             }
 		}
 	}
@@ -94,16 +95,27 @@ process_t *alloc_proc(const char* bin, thread_t *thr){
             init_list_head(&thr->process_list_thread_node);
             list_append(&thr->process_list_thread_node, &p->thread_list);
             thr->trapframe = (trapframe_t *)mm_kalloc();
+            if(thr->trapframe == 0) BUG("alloc trapframe fail!");
             thr->kstack = p->kstack; 
 
             uint64 kstack_pa = (uint64)mm_kalloc();
-            pt_map_pages(kernel_pagetable, thr->kstack, kstack_pa, PGSIZE, PTE_R | PTE_W);
+            if(kstack_pa == 0) BUG("alloc kstack_pa fail!");
+            if(pt_map_pages(kernel_pagetable, thr->kstack, kstack_pa, PGSIZE, PTE_R | PTE_W) < 0){
+                BUG("kernel_page map kstack fail!");
+            }
 
             p->pagetable = (pagetable_t)mm_kalloc();
+            if(p->pagetable == 0) BUG("alloc process pagetable fail!");
             memset(p->pagetable, 0, PGSIZE);
-            pt_map_pages(p->pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);           
-            pt_map_pages(p->pagetable, TRAPFRAME, (uint64)(thr->trapframe), PGSIZE, PTE_R | PTE_W);
-            pt_map_pages(p->pagetable, thr->kstack, kstack_pa, PGSIZE, PTE_R | PTE_W);       
+            if(pt_map_pages(p->pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) < 0){
+                BUG("process pagetable map trampoline fail!");
+            }           
+            if(pt_map_pages(p->pagetable, TRAPFRAME, (uint64)(thr->trapframe), PGSIZE, PTE_R | PTE_W) < 0){
+                BUG("process pagetable map trapframe fail!");
+            } //if we have another thread, map to TRAPFRAME - PGSIZE, because we only have one thread here!
+            if(pt_map_pages(p->pagetable, thr->kstack, kstack_pa, PGSIZE, PTE_R | PTE_W) < 0){
+                BUG("process pagetable map kstack fail!");
+            }       
             acquire(&pidlock);
             p->pid = _pid++;
             release(&pidlock);
@@ -119,7 +131,10 @@ process_t *alloc_proc(const char* bin, thread_t *thr){
             thr->trapframe->sp = 10 * PGSIZE;
 
             uint64 ustack_pa = (uint64)mm_kalloc();
-            pt_map_pages(p->pagetable, thr->trapframe->sp - PGSIZE, ustack_pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+            if(ustack_pa == 0) BUG("alloc ustack fail!");
+            if(pt_map_pages(p->pagetable, thr->trapframe->sp - PGSIZE, ustack_pa, PGSIZE, PTE_R | PTE_W | PTE_U) < 0){
+                BUG("process pagetable map ustack fail!");                
+            }
 
             p->process_state = RUNNABLE;
             thr->thread_state = RUNNABLE;
@@ -143,7 +158,7 @@ bool load_thread(file_type_t type){
     } else {
         BUG("Not supported");
     }
-
+    return true; 
 }
 
 // sched_enqueue和sched_dequeue的主要任务是加入一个任务到队列中和删除一个任务
@@ -167,16 +182,14 @@ bool sched_empty(){
 }
 
 // 开始运行某个特定的函数
-void thread_run(thread_t *target){ //maybe wrong !!! 
+void thread_run(thread_t *target){
     acquire(&target->thread_lock);
     if(target->thread_state == RUNNABLE){
-        int cpu_id = cpuid();
         target->thread_state = RUNNING;
-        running[cpu_id] = target;
-//        printk("context: ra: %d, sp: %d, s0: %d, s1: %d, s2: %d, s3: %d, s4: %d, s5: %d, s6: %d, s7: %d, s8: %d, s9: %d, s10: %d, s11: %d\n", target->context.ra, target->context.sp, target->context.s0, target->context.s1, target->context.s2, target->context.s3, target->context.s4, target->context.s5, target->context.s6, target->context.s7, target->context.s8, target->context.s9, target->context.s10, target->context.s11);
-        swtch(&contexts[cpu_id], &target->context);        
+        running[cpuid()] = target;
+        swtch(&contexts[cpuid()], &target->context);        
         //after yield
-        running[cpu_id] = 0;
+        running[cpuid()] = 0;
     }
     release(&target->thread_lock);
 }

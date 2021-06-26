@@ -91,9 +91,7 @@ void usertrapret() {
     w_sstatus(x);
 
     w_sepc(t->trapframe->epc);
-//    w_sepc(pt_query_address(list_entry(t->process_list_thread_node.next, process_t, thread_list)->pagetable, t->trapframe->epc));
     uint64 satp = MAKE_SATP(list_entry(t->process_list_thread_node.next, process_t, thread_list)->pagetable);
     uint64 fn = TRAMPOLINE + (usertrap2 - trampoline);
-//    uint64 fn = usertrap2;
     ((void (*)(uint64,uint64))fn)(TRAPFRAME, satp);
 }

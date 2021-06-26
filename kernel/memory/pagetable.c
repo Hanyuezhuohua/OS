@@ -47,5 +47,7 @@ void pt_kern_vmmap(){
     paddr_t unmapped_pa = pt_query_address(kernel_pagetable, (uint64) kernel_pagetable);
     ASSERT_EQ(unmapped_pa, 0, "unmap");
     pt_map_pages(kernel_pagetable, (uint64)kernel_pagetable, (uint64)kernel_pagetable, PGSIZE, PTE_R | PTE_W);
-    pt_map_pages(kernel_pagetable, (uint64)TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+    if(pt_map_pages(kernel_pagetable, (uint64)TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) < 0){
+        BUG("kernel map trampoline fail!");
+    }
 }

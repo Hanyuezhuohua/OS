@@ -13,10 +13,6 @@ typedef __builtin_va_list va_list;
 // 参考资料：https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html
 // 注意：我们是 RISCV 架构，最后进入内核态需要 ecall 指令
 void sys_putc(char val){
-/*    asm volatile("li a7, 2\n\t"
-                "mv a0, %0"
-                "ecall"
-                : "=r"(val) :: "memory");*/
     asm volatile("li a7, 2\n"
                 "mv a0, %0\n"
                 "ecall\n"
@@ -24,10 +20,6 @@ void sys_putc(char val){
 }
 
 void sys_exit(int value){
-/*    asm volatile("li a7, 1\n\t"
-                "mv a0 %0"
-                "ecall"
-                : "=r"(value) :: "memory"); */
     asm volatile("li a7, 1\n"
                 "mv a0, %0\n"
                 "ecall\n"

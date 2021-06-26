@@ -37,12 +37,15 @@ int pt_map_pages(pagetable_t pagetable, vaddr_t va, paddr_t pa, uint64 size, int
     // Suggested: 11 LoCs
     vaddr_t start = PGROUNDDOWN(va);
     vaddr_t end = PGROUNDDOWN(va + size - 1);
+    int res = 0;
     while(start <= end){
-        pt_map_addrs(pagetable, start, pa, perm);
+        res = pt_map_addrs(pagetable, start, pa, perm);
+        if(res == -1) break;
         start += PGSIZE;
         pa += PGSIZE;
     }
-    return 0; // Do not modify
+    return res;
+//    return 0; // Do not modify
 }
 
 paddr_t pt_query_address(pagetable_t pagetable, vaddr_t va){
@@ -66,5 +69,6 @@ int pt_map_addrs(pagetable_t pagetable, vaddr_t va, paddr_t pa, int perm){
     // Suggested: 2 LoCs
     pte_t* pte = pt_query(pagetable, va, 1);
     if(pte != NULL) *pte = PA2PTE(pa) | perm | PTE_V;
+    else return -1;
     return 0; // Do not modify
 }
